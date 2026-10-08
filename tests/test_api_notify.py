@@ -1,4 +1,5 @@
 import os
+import json
 import unittest
 from unittest.mock import Mock, patch
 import httpx
@@ -36,6 +37,14 @@ class APITests(Fixture):
 class NotifyTests(unittest.TestCase):
     def setUp(self):
         self.alert={"id":1,"scope":"total","month":"2026-10","message":"CloudCost budget alert","amount":"120","threshold":"100","currency":"USD"}
+
+    def test_webhook_preserves_calendar_basis(self):
+        self.alert["basis"]="calendar_mtd"
+        seen=[]
+        with patch.dict(os.environ,{"TEST_URL":"https://example.com/hook"}), httpx.Client(transport=httpx.MockTransport(lambda r: (seen.append(json.loads(r.content)), httpx.Response(200))[1])) as client:
+            send({"type":"webhook","url_env":"TEST_URL"},self.alert,client)
+        self.assertEqual(seen[0]["basis"],"calendar_mtd")
+        self.assertEqual(seen[0]["alert"]["basis"],"calendar_mtd")
 
     def test_webhook_slack_discord_and_ntfy(self):
         for kind in ["webhook","slack","discord","ntfy"]:

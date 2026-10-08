@@ -3,7 +3,7 @@ from decimal import Decimal
 import logging
 from . import notify, providers
 from .config import MissingEnvironmentError
-from .models import money, utcnow
+from .models import BASES, money, utcnow
 
 log = logging.getLogger("cloudcost")
 
@@ -26,7 +26,8 @@ def collect_all(config, db, month):
             bill = providers.collect(provider, config, month)
             db.save(provider["id"], bill, config)
             db.record_collection(provider["id"], month, True)
-            results.append({"provider": provider["id"], "ok": True, "amount": str(bill.amount), "currency": bill.currency})
+            results.append({"provider": provider["id"], "ok": True, "amount": str(bill.amount), "currency": bill.currency,
+                            "basis": bill.basis, "complete": bill.complete})
         except Exception as error:
             text = safe_error(error)
             db.record_collection(provider["id"], month, False, text)
@@ -45,7 +46,7 @@ def summary(config, db, month):
                 "threshold_currency": provider["threshold_currency"], "mode": provider["mode"]}
         if not row:
             result.append({**base, "status": "missing", "amount": None, "amount_usd": None, "complete": False,
-                           "captured_at": None, "source": None, "budget_percent": None})
+                           "captured_at": None, "source": None, "budget_percent": None, "basis": None})
             continue
         age = (datetime.now(timezone.utc) - datetime.fromisoformat(row["captured_at"])).total_seconds()
         # Archived MTD snapshots remain queryable without pretending to be current data.
@@ -63,7 +64,9 @@ def summary(config, db, month):
                        "basis": row["basis"]})
     complete = bool(result) and all(p["status"] == "ok" for p in result)
     threshold_usd = config.convert(config.total_threshold, config.total_currency) if config.total_threshold is not None else None
-    return {"month": month, "basis": "unbilled_mtd", "demo": config.demo, "providers": result,
+    bases = {p["basis"] for p in result if p["basis"]}
+    basis = next(iter(bases)) if len(bases) == 1 else "mixed_mtd" if bases else None
+    return {"month": month, "basis": basis, "demo": config.demo, "providers": result,
             "total_usd": str(total), "complete": complete,
             "total_threshold": str(config.total_threshold) if config.total_threshold is not None else None,
             "total_threshold_currency": config.total_currency,
@@ -82,23 +85,23 @@ def check(config, db, month, dry_run=False):
             continue
         amount = config.convert(row["amount"], row["currency"], row["threshold_currency"])
         if amount > money(row["threshold"]):
-            candidates.append((row["id"], amount, money(row["threshold"]), row["threshold_currency"]))
+            candidates.append((row["id"], amount, money(row["threshold"]), row["threshold_currency"], row["basis"]))
     if config.total_threshold is not None:
         if not data["complete"]:
             skipped.append({"scope": "total", "reason": "数据缺失、过期或覆盖不完整"})
         else:
             amount = config.convert(data["total_usd"], "USD", config.total_currency)
             if amount > config.total_threshold:
-                candidates.append(("total", amount, config.total_threshold, config.total_currency))
+                candidates.append(("total", amount, config.total_threshold, config.total_currency, data["basis"]))
     detected, deliveries = [], []
-    for scope, amount, threshold, currency in candidates:
-        message = f"CloudCost 预算报警｜{month} 当月未出账费用｜{scope}：{amount:.2f} {currency} > {threshold:.2f} {currency}"
-        detected.append({"scope": scope, "month": month, "amount": str(amount), "threshold": str(threshold), "currency": currency, "message": message})
+    for scope, amount, threshold, currency, basis in candidates:
+        message = f"CloudCost 预算报警｜{month} {BASES[basis]}｜{scope}：{amount:.2f} {currency} > {threshold:.2f} {currency}"
+        detected.append({"scope": scope, "month": month, "amount": str(amount), "threshold": str(threshold), "currency": currency, "message": message, "basis": basis})
         if dry_run:
             continue
         # Demonstration datasets must never trigger a real external notification.
         channels = [c for c in config.channels if not config.demo or c["type"] == "console"]
-        alert = db.alert(scope, month, amount, threshold, currency, message, channels)
+        alert = db.alert(scope, month, amount, threshold, currency, message, channels, basis)
         for channel in channels:
             if not db.claim(alert["id"], channel["name"]):
                 continue

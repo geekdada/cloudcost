@@ -53,10 +53,10 @@ path = "demo-feeds/{name}.json"
             for name, currency, amount, _ in VALUES:
                 factor = Decimal(day) / max_day * (Decimal(1) - Decimal(offset) * Decimal("0.06"))
                 bill = Bill(month, (Decimal(amount) * factor).quantize(Decimal("0.01")), currency,
-                            "demo:unbilled_mtd", observed_at=stamp.isoformat())
+                            "demo:calendar_mtd", observed_at=stamp.isoformat(), basis="calendar_mtd")
                 db.save(name, bill, config)
     for name, currency, amount, _ in VALUES:
         row = {"month": now.strftime("%Y-%m"), "amount": amount, "currency": currency,
-               "basis": "unbilled_mtd", "complete": True, "observed_at": utcnow()}
+               "basis": "calendar_mtd", "complete": True, "observed_at": utcnow()}
         (feed_dir / f"{name}.json").write_text(json.dumps(row, indent=2), encoding="utf-8")
     return config

@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS collections (
 CREATE TABLE IF NOT EXISTS alerts (
  id INTEGER PRIMARY KEY, scope TEXT NOT NULL, month TEXT NOT NULL,
  amount TEXT NOT NULL, threshold TEXT NOT NULL, currency TEXT NOT NULL,
- created_at TEXT NOT NULL, message TEXT NOT NULL,
+ created_at TEXT NOT NULL, message TEXT NOT NULL, basis TEXT NOT NULL DEFAULT 'unbilled_mtd',
  UNIQUE(scope, month, threshold, currency)
 );
 CREATE TABLE IF NOT EXISTS deliveries (
@@ -36,6 +36,10 @@ class Database:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript(SCHEMA)
+            # Upgrade existing installations without dropping snapshots or deliveries.
+            db.execute("BEGIN IMMEDIATE")
+            if "basis" not in {r["name"] for r in db.execute("PRAGMA table_info(alerts)")}:
+                db.execute("ALTER TABLE alerts ADD COLUMN basis TEXT NOT NULL DEFAULT 'unbilled_mtd'")
 
     @contextmanager
     def connect(self):
@@ -53,10 +57,10 @@ class Database:
         now = utcnow()
         with self.connect() as db:
             db.execute("""INSERT INTO snapshots(provider,month,amount,currency,amount_usd,fx_rate,
-                       captured_at,collected_at,source,complete) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                       captured_at,collected_at,source,complete,basis) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                        (provider, bill.month, str(bill.amount), bill.currency,
                         str(config.convert(bill.amount, bill.currency)), str(config.fx[bill.currency]),
-                        bill.observed_at or now, now, bill.source, int(bill.complete)))
+                        bill.observed_at or now, now, bill.source, int(bill.complete), bill.basis))
 
     def record_collection(self, provider, month, ok, error=None):
         with self.connect() as db:
@@ -83,12 +87,12 @@ class Database:
         with self.connect() as db:
             return [dict(r) for r in db.execute("SELECT * FROM collections ORDER BY id DESC LIMIT ?", (limit,))]
 
-    def alert(self, scope, month, amount, threshold, currency, message, channels):
+    def alert(self, scope, month, amount, threshold, currency, message, channels, basis="unbilled_mtd"):
         # IMMEDIATE serializes alert creation across CLI/daemon processes.
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            db.execute("""INSERT OR IGNORE INTO alerts(scope,month,amount,threshold,currency,created_at,message)
-                       VALUES(?,?,?,?,?,?,?)""", (scope, month, str(amount), str(threshold.normalize()), currency, utcnow(), message))
+            db.execute("""INSERT OR IGNORE INTO alerts(scope,month,amount,threshold,currency,created_at,message,basis)
+                       VALUES(?,?,?,?,?,?,?,?)""", (scope, month, str(amount), str(threshold.normalize()), currency, utcnow(), message, basis))
             row = dict(db.execute("SELECT * FROM alerts WHERE scope=? AND month=? AND threshold=? AND currency=?",
                                   (scope, month, str(threshold.normalize()), currency)).fetchone())
             for channel in channels:

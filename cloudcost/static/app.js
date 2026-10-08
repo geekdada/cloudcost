@@ -4,7 +4,7 @@ const names = { aws: "AWS", vercel: "Vercel", cloudflare: "Cloudflare", aliyun: 
 const colors = { total: "#b4f5d1", aws: "#f4b564", vercel: "#c5cddb", cloudflare: "#f59469", aliyun: "#9d9af2", alibabacloud: "#72bad8" };
 const symbols = { aws: "aws", vercel: "▲", cloudflare: "☁", aliyun: "◈", alibabacloud: "ALI" };
 const viewInfo = {
-  overview: ["费用概览", "一处掌握所有云平台的当月未出账费用。"],
+  overview: ["费用概览", "一处掌握所有云平台的当月累计费用。"],
   providers: ["云平台", "查看各平台的累计费用、独立预算与采集状态。"],
   history: ["费用快照", "每一次采集，都留下可追溯的费用记录。"],
   alerts: ["报警记录", "查看预算超限事件、通知投递状态与采集错误。"],
@@ -21,6 +21,7 @@ function stamp(value) {
   if (!value) return "尚未采集";
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" }).format(new Date(value)) + " UTC";
 }
+function basisLabel(basis) { return ({unbilled_mtd:"当月未出账", calendar_mtd:"自然月累计", mixed_mtd:"月累计 · 混合口径"})[basis] || "等待费用数据"; }
 function label(p) { return names[p.kind] || p.id; }
 function logo(p) { return `<span class="provider-logo ${esc(p.kind)}">${esc(symbols[p.kind] || "☁")}</span>`; }
 function badge(p) {
@@ -101,18 +102,19 @@ function render() {
   const historical = d.month !== new Date().toISOString().slice(0, 7);
   $("notice").hidden = d.complete && !d.demo && !historical;
   $("notice").className = `notice${d.demo ? " demo" : ""}`;
-  $("notice").textContent = (d.demo ? "演示模式 · 当前展示模拟的未出账费用，外部通知已禁用。" : "") + (historical ? "历史月份展示当时保存的未出账快照，不代表最终账单。" : !d.complete ? " 部分平台数据缺失、过期或覆盖不完整；已知合计仅供参考，总预算判断已暂停。" : " 云平台费用数据可能延迟更新。");
+  $("notice").textContent = (d.demo ? "演示模式 · 当前展示模拟的月累计费用，外部通知已禁用。" : "") + (historical ? "历史月份展示当时保存的费用快照，不代表最终账单。" : !d.complete ? " 部分平台数据缺失、过期或覆盖不完整；已知合计仅供参考，总预算判断已暂停。" : " 云平台费用数据可能延迟更新。");
   $("footer-fx").textContent = `1 USD = ${Number(d.fx.CNY).toFixed(2)} CNY · 固定汇率`;
+  $("footer-basis").textContent = basisLabel(d.basis);
   renderProviders(); renderChart(); renderAllocation(); renderHistory(); renderAlerts(); renderSettings();
   applyBars();
 }
 function providerTable() {
   if (!state.data.providers.length) return empty("尚未配置云平台", "在 TOML 中添加 providers 配置。");
-  return `<table><thead><tr><th>云平台</th><th>当月未出账费用</th><th>独立预算</th><th>预算使用率</th><th>状态</th><th>数据时间</th></tr></thead><tbody>${state.data.providers.map(p => `<tr><td><div class="provider-cell">${logo(p)}<div><div class="provider-name">${esc(label(p))}</div><div class="provider-id">${esc(p.id)}</div></div></div></td><td><span class="money-text">${cash(p.amount, p.currency)}</span><span class="secondary-money">${p.amount_usd !== null ? `≈ ${cash(displayAmount(p.amount_usd), state.currency)}` : "等待当月费用数据"}</span></td><td>${cash(p.threshold, p.threshold_currency)}<span class="secondary-money">${esc(p.threshold_currency)} / 月</span></td><td>${progress(p)}</td><td>${badge(p)}</td><td class="timestamp">${stamp(p.captured_at)}</td></tr>`).join("")}</tbody></table>`;
+  return `<table><thead><tr><th>云平台</th><th>当月累计费用</th><th>独立预算</th><th>预算使用率</th><th>状态</th><th>数据时间</th></tr></thead><tbody>${state.data.providers.map(p => `<tr><td><div class="provider-cell">${logo(p)}<div><div class="provider-name">${esc(label(p))}</div><div class="provider-id">${esc(p.id)} · ${esc(basisLabel(p.basis))}${p.source?.includes(":configured-fixed-fees") ? " · 含固定费估计" : ""}</div></div></div></td><td><span class="money-text">${cash(p.amount, p.currency)}</span><span class="secondary-money">${p.amount_usd !== null ? `≈ ${cash(displayAmount(p.amount_usd), state.currency)}` : "等待当月费用数据"}</span></td><td>${cash(p.threshold, p.threshold_currency)}<span class="secondary-money">${esc(p.threshold_currency)} / 月</span></td><td>${progress(p)}</td><td>${badge(p)}</td><td class="timestamp">${stamp(p.captured_at)}</td></tr>`).join("")}</tbody></table>`;
 }
 function renderProviders() {
   $("overview-provider-table").innerHTML = $("all-provider-table").innerHTML = providerTable();
-  $("provider-cards").innerHTML = state.data.providers.map(p => `<article class="panel provider-card"><div class="provider-card-header">${logo(p)}<div><h3>${esc(label(p))}</h3><span class="provider-id">${esc(p.id)}</span></div>${badge(p)}</div><span class="label">当月累计 · 未出账</span><div class="card-cost">${cash(p.amount, p.currency)}</div><span class="label">独立预算 ${cash(p.threshold, p.threshold_currency)}</span>${progress(p)}<div class="card-footer"><span>${esc(p.mode === "native" ? "原生费用 API" : "未出账费用 feed")}</span><span>${stamp(p.captured_at)}</span></div></article>`).join("");
+  $("provider-cards").innerHTML = state.data.providers.map(p => `<article class="panel provider-card"><div class="provider-card-header">${logo(p)}<div><h3>${esc(label(p))}</h3><span class="provider-id">${esc(p.id)}</span></div>${badge(p)}</div><span class="label">${esc(basisLabel(p.basis))}${p.source?.includes(":configured-fixed-fees") ? " · 含固定费估计" : ""}</span><div class="card-cost">${cash(p.amount, p.currency)}</div><span class="label">独立预算 ${cash(p.threshold, p.threshold_currency)}</span>${progress(p)}<div class="card-footer"><span>${esc(p.mode === "native" ? "原生费用 API" : "月累计费用 feed")}</span><span>${stamp(p.captured_at)}</span></div></article>`).join("");
   const old = $("history-provider").value;
   $("history-provider").innerHTML = `<option value="">全部平台</option>${state.data.providers.map(p => `<option value="${esc(p.id)}">${esc(label(p))} · ${esc(p.id)}</option>`).join("")}`;
   if (state.data.providers.some(p => p.id === old)) $("history-provider").value = old;
@@ -182,13 +184,13 @@ function renderHistory() {
   const selected = $("history-provider").value;
   const rows = state.snapshots.filter(row => !selected || row.provider === selected).slice(0,500);
   if (!rows.length) { $("history-table").innerHTML = empty("暂无费用快照", "运行采集命令后，记录会出现在这里。"); return; }
-  $("history-table").innerHTML = `<table><thead><tr><th>数据时间 (UTC)</th><th>云平台 / 账号</th><th>月度累计金额</th><th>折算 ${esc(state.currency)}</th><th>数据来源</th><th>覆盖范围</th></tr></thead><tbody>${rows.map(r => `<tr><td class="timestamp">${stamp(r.captured_at)}</td><td>${esc(r.provider)}</td><td class="money-text">${cash(r.amount,r.currency)}</td><td>${cash(displayAmount(r.amount_usd),state.currency)}</td><td class="timestamp">${esc(r.source)}</td><td><span class="pill ${r.complete ? "good" : "warning"}">${r.complete ? "完整" : "部分"}</span></td></tr>`).join("")}</tbody></table>`;
+  $("history-table").innerHTML = `<table><thead><tr><th>数据时间 (UTC)</th><th>云平台 / 账号</th><th>月度累计金额</th><th>折算 ${esc(state.currency)}</th><th>数据来源 / 口径</th><th>覆盖范围</th></tr></thead><tbody>${rows.map(r => `<tr><td class="timestamp">${stamp(r.captured_at)}</td><td>${esc(r.provider)}</td><td class="money-text">${cash(r.amount,r.currency)}</td><td>${cash(displayAmount(r.amount_usd),state.currency)}</td><td class="timestamp">${esc(r.source)}<span class="secondary-money">${esc(basisLabel(r.basis))}</span></td><td><span class="pill ${r.complete ? "good" : "warning"}">${r.complete ? "完整" : "部分"}</span></td></tr>`).join("")}</tbody></table>`;
 }
 function renderAlerts() {
   $("nav-alert-count").textContent = state.alerts.length;
   $("alerts-count").textContent = `${state.alerts.length} 条记录`;
   const statuses = {sent:["已发送","good"],failed:["投递失败","danger"],pending:["待发送","warning"],sending:["投递中","warning"]};
-  $("alert-list").innerHTML = state.alerts.length ? state.alerts.map(a => `<article class="alert-row"><div class="alert-row-title"><span class="pill danger">预算超限</span><strong>${esc(a.scope === "total" ? "全部平台总预算" : a.scope)}</strong><span class="timestamp">${stamp(a.created_at)}</span></div><p>${cash(a.amount,a.currency)} 超过阈值 ${cash(a.threshold,a.currency)} · ${esc(a.month)} 未出账累计</p><div class="delivery-tags">${a.deliveries.length ? a.deliveries.map(c => `<span class="pill ${statuses[c.status]?.[1] || "warning"}" title="${esc(c.error || "")}">${esc(c.channel)} · ${esc(statuses[c.status]?.[0] || c.status)} · ${c.attempts} 次尝试</span>`).join("") : "未配置通知渠道"}</div></article>`).join("") : empty("这个月还没有报警记录", "预算判断由 CLI / 监控进程执行，查询页面不会触发通知。");
+  $("alert-list").innerHTML = state.alerts.length ? state.alerts.map(a => `<article class="alert-row"><div class="alert-row-title"><span class="pill danger">预算超限</span><strong>${esc(a.scope === "total" ? "全部平台总预算" : a.scope)}</strong><span class="timestamp">${stamp(a.created_at)}</span></div><p>${cash(a.amount,a.currency)} 超过阈值 ${cash(a.threshold,a.currency)} · ${esc(a.month)} · ${esc(basisLabel(a.basis))}</p><div class="delivery-tags">${a.deliveries.length ? a.deliveries.map(c => `<span class="pill ${statuses[c.status]?.[1] || "warning"}" title="${esc(c.error || "")}">${esc(c.channel)} · ${esc(statuses[c.status]?.[0] || c.status)} · ${c.attempts} 次尝试</span>`).join("") : "未配置通知渠道"}</div></article>`).join("") : empty("这个月还没有报警记录", "预算判断由 CLI / 监控进程执行，查询页面不会触发通知。");
   $("collection-table").innerHTML = state.collections.length ? `<table><thead><tr><th>时间 (UTC)</th><th>平台</th><th>月份</th><th>采集状态</th><th>说明</th></tr></thead><tbody>${state.collections.map(r => `<tr><td class="timestamp">${stamp(r.collected_at)}</td><td>${esc(r.provider)}</td><td>${esc(r.month)}</td><td><span class="pill ${r.ok ? "good" : "danger"}">${r.ok ? "成功" : "失败"}</span></td><td class="error-text">${esc(r.error || "—")}</td></tr>`).join("")}</tbody></table>` : empty("尚无采集日志", "演示快照在初始化时生成。运行 collect 可生成采集记录。");
 }
 function renderSettings() {

@@ -27,6 +27,8 @@ def main():
         assert page.locator("#total-value").inner_text() == "$910.59"
         assert page.locator("#overview-provider-table tbody tr").count() == 5
         assert page.locator("#trend-chart circle").count() > 0
+        expect(page.locator("#footer-basis")).to_have_text("自然月累计")
+        assert all("自然月累计" in text for text in page.locator("#overview-provider-table .provider-id").all_text_contents())
         page.screenshot(path=f"{args.output}-desktop.png", full_page=True)
 
         page.locator("#display-currency").select_option("CNY")
@@ -59,6 +61,16 @@ def main():
         page.set_viewport_size({"width": 390, "height": 844})
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
         page.screenshot(path=f"{args.output}-mobile.png", full_page=True)
+
+        # A mixed total keeps individual source labels.
+        mixed = page.request.get(args.url + "/api/summary").json()
+        mixed["basis"] = "mixed_mtd"
+        mixed["providers"][0]["basis"] = "unbilled_mtd"
+        page.route("**/api/summary?*", lambda route: route.fulfill(json=mixed))
+        page.locator("#refresh").click()
+        expect(page.locator("#footer-basis")).to_have_text("月累计 · 混合口径")
+        expect(page.locator("#overview-provider-table .provider-id").first).to_contain_text("当月未出账")
+        page.unroute("**/api/summary?*")
 
         # Same shell, but all providers lack data. A known subtotal of zero must
         # not be presented as a complete zero-dollar month.

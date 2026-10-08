@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 import httpx
-from cloudcost.models import current_month, utcnow
-from cloudcost.providers import ProviderError, aliyun, aws, collect, parse_feed, request
+from cloudcost.models import current_month, next_month, utcnow
+from cloudcost.providers import ProviderError, aliyun, aws, cloudflare, collect, parse_feed, request, vercel
 from test_core import Fixture
 
 
@@ -21,6 +21,16 @@ class FeedTests(unittest.TestCase):
 
     def test_valid_json_precise_amount(self):
         self.assertEqual(self.parse(self.row()).amount, Decimal("18.42"))
+
+    def test_calendar_feeds_and_mixed_csv_rejected(self):
+        self.assertEqual(self.parse(self.row(basis="calendar_mtd")).basis, "calendar_mtd")
+        month, stamp = current_month(), utcnow()
+        csv = f"month,amount,currency,basis,complete,observed_at\n{month},1,USD,calendar_mtd,true,{stamp}\n{month},2,USD,calendar_mtd,true,{stamp}\n"
+        bill = parse_feed(csv, month, "USD", "csv")
+        self.assertEqual(bill.amount, Decimal(3))
+        self.assertEqual(bill.basis, "calendar_mtd")
+        with self.assertRaises(ProviderError):
+            parse_feed(csv.replace(",2,USD,calendar_mtd", ",2,USD,unbilled_mtd"), month, "USD", "csv")
 
     def test_invoices_and_ambiguous_focus_costs_are_rejected(self):
         for row in [self.row(basis="invoiced"), {"month": current_month(), "BilledCost": 99}]:
@@ -71,6 +81,7 @@ class CollectorTests(Fixture):
         sdk=SimpleNamespace(Session=Mock(return_value=SimpleNamespace(client=Mock(return_value=ce))))
         with patch.dict(sys.modules,{"boto3":sdk}): bill=aws({"profile":"readonly"},self.month)
         self.assertEqual(bill.amount,Decimal("22.12"))
+        self.assertEqual(bill.basis,"calendar_mtd")
         self.assertIn("estimated",bill.source)
         params=ce.get_cost_and_usage.call_args.kwargs
         self.assertEqual(params["TimePeriod"]["Start"],self.month+"-01")
@@ -96,6 +107,7 @@ class CollectorTests(Fixture):
         with patch.dict(os.environ,env), httpx.Client(transport=httpx.MockTransport(handler)) as client:
             bill=aliyun({"kind":"aliyun"},self.month,client)
         self.assertEqual(bill.amount,Decimal(108))
+        self.assertEqual(bill.basis,"calendar_mtd")
         self.assertEqual(len(seen),2)
         self.assertEqual(seen[0].url.host,"business.aliyuncs.com")
 
@@ -109,6 +121,84 @@ class CollectorTests(Fixture):
     def test_aliyun_empty_bill_is_not_zero(self):
         with patch.dict(os.environ,{"ALIYUN_ACCESS_KEY_ID":"id","ALIYUN_ACCESS_KEY_SECRET":"secret"}), httpx.Client(transport=httpx.MockTransport(lambda _:httpx.Response(200,json={"Success":True,"Code":"Success","Data":{"TotalCount":0,"Items":{"Item":[]}}}))) as client:
             with self.assertRaises(ProviderError): aliyun({"kind":"aliyun"},self.month,client)
+
+
+class CalendarCollectorTests(unittest.TestCase):
+    def setUp(self):
+        self.month = current_month()
+        self.env = {"VERCEL_TOKEN": "fake-token", "VERCEL_TEAM_ID": "team_test",
+                    "CLOUDFLARE_API_TOKEN": "fake-cf-token", "CLOUDFLARE_ACCOUNT_ID": "a" * 32}
+
+    def row(self, amount="12.30", **kwargs):
+        # Daily rows: don't depend on tests running after the first of a month.
+        return {"BilledCost": amount, "BillingCurrency": "USD", "ChargePeriodStart": self.month+"-01T00:00:00Z",
+                "ChargePeriodEnd": self.month+"-02T00:00:00Z", "EffectiveCost": "999", **kwargs}
+
+    def test_vercel_jsonl_exact_cost_credits_and_utc_window(self):
+        def handler(req):
+            self.assertEqual(req.method, "GET")
+            self.assertEqual(req.url.path, "/v1/billing/charges")
+            self.assertEqual(req.url.params["teamId"], "team_test")
+            self.assertEqual(req.url.params["from"], self.month+"-01T00:00:00Z")
+            self.assertEqual(req.headers["Authorization"], "Bearer fake-token")
+            return httpx.Response(200,text='\n'.join(json.dumps(r) for r in [self.row(0.1), self.row(0.2), self.row(-0.05)]))
+        with patch.dict(os.environ,self.env), httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            bill = vercel({},self.month,client)
+        self.assertEqual(bill.amount,Decimal("0.25"))
+        self.assertEqual(bill.basis,"calendar_mtd")
+        self.assertTrue(bill.complete)
+
+    def test_vercel_uses_charge_month_not_invoice_month(self):
+        row = self.row(BillingPeriodStart="1999-01-01T00:00:00Z")
+        foreign = self.row(100,ChargePeriodStart="1999-01-01T00:00:00Z",ChargePeriodEnd="1999-01-02T00:00:00Z")
+        with patch.dict(os.environ,self.env), httpx.Client(transport=httpx.MockTransport(lambda _:httpx.Response(200,text=json.dumps(row)+'\n'+json.dumps(foreign)))) as client:
+            self.assertEqual(vercel({},self.month,client).amount,Decimal("12.30"))
+
+    def test_vercel_empty_unrated_mixed_currency_and_cross_month_rejected(self):
+        rows = [[], [self.row(BilledCost=None)], [self.row(),self.row(BillingCurrency="CNY")],
+                [self.row(ChargePeriodEnd=next_month(self.month)+"-02T00:00:00Z")]]
+        for items in rows:
+            with patch.dict(os.environ,self.env), httpx.Client(transport=httpx.MockTransport(lambda _:httpx.Response(200,text='\n'.join(json.dumps(r) for r in items)))) as client:
+                with self.assertRaises(ProviderError): vercel({},self.month,client)
+
+    def test_cloudflare_readonly_post_cost_and_fixed_fees(self):
+        def handler(req):
+            self.assertEqual(req.method,"POST")
+            self.assertEqual(req.url.path,"/client/v4/accounts/"+"a"*32+"/billable/usage")
+            body=json.loads(req.content)
+            self.assertEqual(body["Metric"],"cost")
+            self.assertEqual(body["TimePeriod"]["From"],self.month+"-01T00:00:00Z")
+            self.assertNotIn("GroupBy",body)
+            return httpx.Response(200,json={"success":True,"result":[self.row(),self.row("-2.20")]})
+        with patch.dict(os.environ,self.env), httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            partial=cloudflare({"currency":"USD"},self.month,client)
+            total=cloudflare({"currency":"USD","fixed_monthly_cost":"5"},self.month,client)
+        self.assertEqual(partial.amount,Decimal("10.10"))
+        self.assertFalse(partial.complete)
+        self.assertEqual(total.amount,Decimal("15.10"))
+        self.assertTrue(total.complete)
+        self.assertEqual(total.basis,"calendar_mtd")
+        self.assertIn("configured-fixed-fees",total.source)
+
+    def test_cloudflare_empty_unrated_and_failed_responses_are_not_zero(self):
+        for data in [{"success":True,"result":[]},{"success":True,"result":[self.row(BilledCost=None)]},
+                     {"success":False,"errors":[{"message":"secret"}]}]:
+            with patch.dict(os.environ,self.env), httpx.Client(transport=httpx.MockTransport(lambda _:httpx.Response(200,json=data))) as client:
+                with self.assertRaises(ProviderError) as caught: cloudflare({"currency":"USD","fixed_monthly_cost":"0"},self.month,client)
+                self.assertNotIn("secret",str(caught.exception))
+
+    def test_last_day_query_stops_at_next_month_and_keeps_31_day_limit(self):
+        observed=[]
+        def handler(req):
+            observed.append(json.loads(req.content))
+            return httpx.Response(200,json={"success":True,"result":[self.row(ChargePeriodStart="2026-12-31T00:00:00Z",ChargePeriodEnd="2027-01-01T00:00:00Z")]})
+        with patch.dict(os.environ,self.env), patch("cloudcost.providers.current_month",return_value="2026-12"), patch("cloudcost.providers.utcnow",return_value="2026-12-31T12:00:00+00:00"), patch("cloudcost.providers.datetime") as clock, patch("cloudcost.models.datetime") as model_clock, httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            clock.now.return_value=datetime(2026,12,31,12,tzinfo=timezone.utc)
+            clock.fromisoformat.side_effect=datetime.fromisoformat
+            model_clock.now.return_value=clock.now.return_value
+            model_clock.fromisoformat.side_effect=datetime.fromisoformat
+            cloudflare({"currency":"USD","fixed_monthly_cost":"0"},"2026-12",client)
+        self.assertEqual(observed[0]["TimePeriod"]["To"],"2027-01-01T00:00:00Z")
 
 
 if __name__ == "__main__": unittest.main()

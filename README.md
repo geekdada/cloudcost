@@ -4,23 +4,27 @@
 
 代码仓库：<https://github.com/geekdada/cloudcost>；容器镜像：`ghcr.io/geekdada/cloudcost`。
 
-监控口径是**当月累计、尚未结算的费用**，不是上月账单、已出账发票或付款金额。支持总和预算、平台独立预算、多账号、固定 USD/CNY 汇率、通知投递记录与定时采集。
+监控当月累计费用：数据源明确提供未出账金额时使用 `unbilled_mtd`；否则使用 UTC **自然月累计** `calendar_mtd`，从月初统计到当前可用数据，不因已付款或月中出账而扣减。支持总和预算、平台独立预算、多账号、固定 USD/CNY 汇率、常见通知渠道和 SPA 查询。
 
 ## 平台接入与实际限制
 
-| 平台 | 接入方式 | 费用口径与限制 |
+| 平台 | 原生接入方式 | 费用口径与限制 |
 | --- | --- | --- |
-| AWS | Cost Explorer `GetCostAndUsage` | 当月 `UnblendedCost` 累计估计费用；默认 USD。需要启用 Cost Explorer 和 `ce:GetCostAndUsage` 权限。 |
-| 阿里云国内站 `aliyun` | BSS `QueryAccountBill` | 查询当月 `BillingCycle`，汇总 `PretaxAmount`（优惠后、税前）；默认 CNY。不是 `PaymentAmount`。 |
-| 阿里云国际站 `alibabacloud` | 国际站 BSS `QueryAccountBill` | 同上，使用独立国际站 endpoint 和凭据；默认 USD。 |
-| Vercel | 当月未出账 JSON/CSV 文件或 HTTPS feed | 必须接入实际的当月未出账数据；没有把历史发票或一般 FOCUS 导出自动标为未出账。 |
-| Cloudflare | 当月未出账 JSON/CSV 文件或 HTTPS feed | 必须接入实际的当月未出账数据；没有使用 billing history 代替当月余额。 |
+| AWS | Cost Explorer `GetCostAndUsage` | 自然月 `UnblendedCost` 累计估计费用；默认 USD。需启用 Cost Explorer 与 `ce:GetCostAndUsage` 权限。 |
+| 阿里云国内站 `aliyun` | BSS `QueryAccountBill` | 当月 `BillingCycle` 的 `PretaxAmount`（优惠后、税前），默认 CNY。不是 `PaymentAmount`。 |
+| 阿里云国际站 `alibabacloud` | 国际站 BSS `QueryAccountBill` | 同上，独立 endpoint 和凭据，默认 USD。 |
+| Vercel | 官方 `GET /v1/billing/charges` | 按 `ChargePeriodStart/End` 汇总 JSONL 明细的 `BilledCost`，包含正负费用更正；自然月累计，默认 USD。配置 token 和 team 即可，无需 bridge。 |
+| Cloudflare | 官方只读 `POST /accounts/{account_id}/billable/usage`，`Metric=cost` | 按自然月查询已定价的用量明细。接口为 **Alpha / Restricted**，需要 Billing Read 权限及账号开放；不含固定套餐费用。 |
 
-**Vercel / Cloudflare 不是配置 token 后即可开箱即用的原生采集器**。需要你已有的费用数据源或一个定时更新的桥接服务。feed 接入可持续自动监控，但本项目没有实现这两家的控制台抓取或通用未出账总额 API。
+五个平台默认都使用 `mode = "native"`，也都可切换为 JSON/CSV 文件或 HTTPS feed。原生接口没有逐笔未出账状态，因此全部如实标记为 `calendar_mtd`。数据库、API、CSV 导出、SPA 与报警都保留实际口径；不同口径合计为 `mixed_mtd`。旧数据库和已有 `unbilled_mtd` feed 可以继续使用。
 
-原生月累计接口也有边界：AWS/阿里云提供当月已产生费用，不提供每笔费用实时“已开发票/未开发票”的状态。若账号发生预付、月中结算或临时出账，月累计不能严格代表剩余待出账余额；这类账号应使用 feed，由数据源排除已结算费用。这个限制不能仅靠接口字段名称或本工具推断解决。
+Cloudflare 的 GET 接口只返回用量，不能计算金额。本工具使用官方 OpenAPI 定义的只读 POST 查询 `Metric=cost`（不修改云资源）；费用模式只对已支持的底层数据源开放。接口未开放、返回空集或缺少金额时报告采集失败，不当作零元，也不会退回历史发票。
 
-Vercel 的公开 `/v1/billing/charges` 返回 FOCUS 成本行，但没有公开的逐行未出账状态字段。Cloudflare 的 Billable Usage 展示当前计费周期的用量费用，周期不一定是自然月，且不等同于全部未结算费用。需要由来源按目标口径整理后接入；**不能只给普通账单数据加一个 `basis` 标签**。
+Cloudflare 原生采集默认 `complete=false`，因为用量金额不包括固定套餐。核对所有固定套餐费用后，可配置 `fixed_monthly_cost = "5"`（原币）补充，或无固定费时显式填写 `"0"`，然后启用完整预算判断。这个值是**整个自然月的固定费用估计**，每月全额计入，不按天摊销；年付、月中升级、退款等需自行调整，或改用完整 feed。固定费用配置不会解决未开放或缺失用量金额的问题。
+
+官方接口说明：[Vercel FOCUS 费用查询](https://vercel.com/docs/rest-api/reference/endpoints/billing/list-billing-charges)、[Cloudflare Billable Usage](https://developers.cloudflare.com/api/resources/billing/subresources/usage/methods/get_account_usage_v2/)、[Cloudflare 官方 OpenAPI（含 POST 查询定义）](https://github.com/cloudflare/api-schemas/blob/main/openapi.yaml)、[Cloudflare 用量费用的覆盖范围](https://developers.cloudflare.com/billing/manage/billable-usage/)。
+
+从 0.1.0 升级时：SQLite 会自动迁移并保留历史记录和投递状态；配置不会被覆盖。要启用新的原生采集，把已有 Vercel / Cloudflare 的 `mode = "feed"` 改为 `"native"`，移除 `path/url`，按下文配置 token、team / account 和固定月费。已有 feed 继续有效。
 
 ## 快速体验
 
@@ -42,9 +46,13 @@ cloudcost serve -c demo.toml
 
 ```bash
 cloudcost init -c config.toml
-# 编辑 config.toml，配置账号、阈值与费用 feed。
+# 编辑 config.toml，配置账号、阈值，禁用不使用的平台。
 # 在本地环境或受保护的环境文件中设置凭据。
 export AWS_PROFILE=billing-readonly
+export VERCEL_TOKEN='你的 Vercel token'
+export VERCEL_TEAM_ID='team_你的团队 ID'
+export CLOUDFLARE_API_TOKEN='具有 Billing Read 权限的 token'
+export CLOUDFLARE_ACCOUNT_ID='32 位账号 ID'
 export ALIYUN_ACCESS_KEY_ID='你的国内站 AK'
 export ALIYUN_ACCESS_KEY_SECRET='你的国内站 secret'
 export ALIBABACLOUD_ACCESS_KEY_ID='你的国际站 AK'
@@ -93,7 +101,7 @@ threshold = "1000" # 国内站默认 CNY
 
 未设置 `budget.total` 或某个平台的 `threshold` 时，该预算判断不启用。**严格大于**阈值才报警，等于阈值不报警。退款、更正造成负数或累计值下降是允许的。
 
-## 未出账数据源契约
+## 可选 feed 数据源契约
 
 JSON 是某个账号在某个月份的**一个累计快照**，文件可含单个对象，也可含不同月份的对象数组。同一月份只允许一个对象。参考 [examples/unbilled-feed.json](examples/unbilled-feed.json)：
 
@@ -108,8 +116,8 @@ JSON 是某个账号在某个月份的**一个累计快照**，文件可含单�
 }
 ```
 
-- `amount`：月初至 `observed_at` 的尚未结算累计金额，不是当日增量。金额应是字符串，避免上游浮点精度损失。
-- `basis`：必须是 `unbilled_mtd`。禁止导入已结算账单、付款记录或直接猜测的金额。
+- `amount`：按声明口径从月初至 `observed_at` 的累计金额，不是当日增量。建议字符串，避免浮点精度损失。
+- `basis`：`unbilled_mtd` 表示来源已排除已出账费用；`calendar_mtd` 表示按 UTC 自然月的费用发生日期累计，包含已出账部分。不能用付款时间或发票日期代替费用发生时间。
 - `complete`：来源是否覆盖该账号所有目标费用；只有 Workers 等部分产品的数据应设为 `false`，不能宣称是 Cloudflare 总费用。
 - `observed_at`：上游金额实际的截至时间，必须带时区、位于该月份且不在未来。不得每次抓取时把旧数据的时间改为当前时间。
 - `currency`：必须与账号配置一致，只支持 USD/CNY。
@@ -143,6 +151,21 @@ format = "json"
 CSV 使用 `format = "csv"`，列为 `month,amount,currency,basis,complete,observed_at`。它代表**一次完整导出的费用明细**，目标月份的行金额会相加。不要把每天的累计快照混在这个 CSV 里，否则会重复累计。参考 [examples/unbilled-line-items.csv](examples/unbilled-line-items.csv)。普通发票 CSV、FOCUS `BilledCost` CSV 不会直接接受。
 
 ## 原生账号配置
+
+Vercel 配置 `token_env = "VERCEL_TOKEN"`，以及 `team_id_env = "VERCEL_TEAM_ID"`、`team_id` 或 `slug`。团队费用接口需要有相应 Billing 查询权限的用户 token。使用 `BilledCost` 而非 `EffectiveCost`，避免把摊销金额与其他平台的普通月累计混用；前者是计费金额，不表示已支付。
+
+Cloudflare 配置 `token_env = "CLOUDFLARE_API_TOKEN"` 与 `account_id_env = "CLOUDFLARE_ACCOUNT_ID"`，或直接配置 `account_id`。需要 Billing Read 权限和费用接口开放。默认配置故意不猜固定费：在该 provider 中填写经过核对的 `fixed_monthly_cost`，才能把用量费与固定费用估计作为完整月度预算比较。
+
+```toml
+[[providers]]
+id = "cloudflare"
+kind = "cloudflare"
+mode = "native"
+threshold = "100"
+account_id_env = "CLOUDFLARE_ACCOUNT_ID"
+token_env = "CLOUDFLARE_API_TOKEN"
+fixed_monthly_cost = "5" # 核对实际套餐；没有固定费则填 "0"
+```
 
 AWS 使用 boto3 默认凭据链，支持环境变量、共享 profile、SSO 和实例/任务角色。可在单个 provider 中指定 `profile`。Cost Explorer 默认 region 为 `us-east-1`，成本指标可选 `UnblendedCost`、`NetUnblendedCost`、`AmortizedCost`、`NetAmortizedCost`。不同指标会改变预付、抵扣和摊销口径，应统一配置。AWS Cost Explorer 查询可能产生 API 费用，默认每小时采集。
 
@@ -250,7 +273,7 @@ cp .env.example .env
 docker compose pull
 docker compose run --rm cloudcost init -c /data/config.toml
 docker compose run --rm --entrypoint cat cloudcost /data/config.toml > config.toml
-# 编辑 config.toml 中的平台、阈值和未出账 feed。
+# 编辑 config.toml 中的平台凭据、阈值及 Cloudflare 固定月费。
 docker compose run --rm -T --entrypoint python cloudcost -c \
   "import sys; from pathlib import Path; Path('/data/config.toml').write_text(sys.stdin.read(), encoding='utf-8')" < config.toml
 docker compose up -d
@@ -276,7 +299,7 @@ docker run --rm -p 127.0.0.1:8765:8765 -v cloudcost-demo:/data \
 2. 构建 AMD64 镜像，检查 CLI、非 root 用户、演示数据库、API 认证和 SPA。
 3. 使用仓库内置的 `GITHUB_TOKEN` 登录 GHCR，发布 AMD64 / ARM64 多架构镜像。
 
-Pull request 执行验证但不推送镜像。默认分支生成 `latest`，每次发布生成 `sha-<短提交>`；如推送 `v0.1.0`，另生成 `0.1.0` 和 `0.1`。版本标签需要显式推送，不会自动创建。镜像带 GitHub 源仓库与提交元数据，发布摘要中显示 digest。无需额外配置 Docker Hub token 或云账号 secrets；云凭据仅在实际运行时注入。首次 GHCR package 默认私有，公开仓库也不保证 package 自动公开，可在 GitHub Packages 设置里另行调整。
+Pull request 执行验证但不推送镜像。默认分支生成 `latest`，每次发布生成 `sha-<短提交>`；如推送 `v0.2.0`，另生成 `0.2.0` 和 `0.2`。版本标签需要显式推送，不会自动创建。镜像带 GitHub 源仓库与提交元数据，发布摘要中显示 digest。无需额外配置 Docker Hub token 或云账号 secrets；云凭据仅在实际运行时注入。首次 GHCR package 默认私有，公开仓库也不保证 package 自动公开，可在 GitHub Packages 设置里另行调整。
 
 本地构建：
 

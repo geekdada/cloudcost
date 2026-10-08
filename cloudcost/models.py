@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import re
 
+BASES = {"unbilled_mtd": "当月未出账费用", "calendar_mtd": "自然月累计费用", "mixed_mtd": "月累计费用（混合口径）"}
+
 
 def money(value) -> Decimal:
     try:
@@ -50,8 +52,8 @@ class Bill:
             raise ValueError("当前仅支持 USD 和 CNY")
         if not isinstance(self.complete, bool):
             raise ValueError("complete 必须是布尔值")
-        if self.basis != "unbilled_mtd":
-            raise ValueError("只接受当月未出账累计费用（basis=unbilled_mtd）")
+        if self.basis not in {"unbilled_mtd", "calendar_mtd"}:
+            raise ValueError("basis 必须为 unbilled_mtd 或 calendar_mtd")
         if self.observed_at:
             timestamp = datetime.fromisoformat(self.observed_at.replace("Z", "+00:00"))
             if timestamp.tzinfo is None:
@@ -59,5 +61,5 @@ class Bill:
             if timestamp > datetime.now(timezone.utc):
                 raise ValueError("observed_at 不能是未来时间")
             if timestamp.astimezone(timezone.utc).strftime("%Y-%m") != self.month:
-                raise ValueError("未出账快照的数据时间必须在对应月份内")
+                raise ValueError("月累计快照的数据时间必须在对应月份内")
             object.__setattr__(self, "observed_at", timestamp.astimezone(timezone.utc).isoformat(timespec="microseconds"))

@@ -100,6 +100,7 @@ jobs:
           with urllib.request.urlopen(req, timeout=5) as r:
               data = json.load(r)
           assert data['complete'] is True
+          assert data['basis'] == 'calendar_mtd'
           assert len(data['providers']) == 5
           assert abs(Decimal(data['total_usd']) - Decimal('910.5888888888888888888888889')) < Decimal('0.00001')
           with urllib.request.urlopen(url, timeout=5) as r:

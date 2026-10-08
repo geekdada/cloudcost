@@ -17,14 +17,14 @@ def output(value):
 
 
 def parser():
-    root = argparse.ArgumentParser(prog="cloudcost", description="当月未出账费用监控 / SQLite / 多渠道预算报警")
+    root = argparse.ArgumentParser(prog="cloudcost", description="当月费用监控（未出账 / 自然月累计）/ SQLite / 多渠道预算报警")
     root.add_argument("--version", action="version", version=__version__)
     root.add_argument("-c", "--config", default="config.toml", help="TOML 配置文件（默认 config.toml）")
     subs = root.add_subparsers(dest="command", required=True)
     init = subs.add_parser("init", help="生成配置；--demo 创建可直接查询的演示数据")
     init.add_argument("--demo", action="store_true")
     init.add_argument("--force", action="store_true", help="覆盖现有配置")
-    for command, help_text in [("collect", "采集一轮当月未出账费用"), ("check", "判断阈值并报警"),
+    for command, help_text in [("collect", "采集一轮当月费用"), ("check", "判断阈值并报警"),
                                ("status", "查询月度累计费用"), ("history", "查询采集快照"),
                                ("alerts", "查询报警及投递记录")]:
         sub = subs.add_parser(command, help=help_text)

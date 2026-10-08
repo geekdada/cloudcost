@@ -86,12 +86,15 @@ def load_config(path: str | Path) -> Config:
             p["threshold"] = money(p["threshold"])
             if p["threshold"] < 0:
                 raise ValueError(f"{name} 的阈值不能小于零")
-        default_mode = "native" if kind in {"aws", "aliyun", "alibabacloud"} else "feed"
-        p["mode"] = p.get("mode", default_mode)
+        p["mode"] = p.get("mode", "native")
         if p["mode"] not in {"native", "feed"}:
             raise ValueError(f"{name} mode 必须为 native/feed")
-        if p["mode"] == "native" and kind in {"vercel", "cloudflare"}:
-            raise ValueError(f"{kind} 使用 feed 接入当月未出账费用，不使用历史发票/付款 API")
+        if "fixed_monthly_cost" in p:
+            if kind != "cloudflare" or p["mode"] != "native":
+                raise ValueError("fixed_monthly_cost 仅用于 Cloudflare 原生采集")
+            p["fixed_monthly_cost"] = money(p["fixed_monthly_cost"])
+            if p["fixed_monthly_cost"] < 0:
+                raise ValueError("固定月费不能小于零")
         providers.append(p)
     channels, names = [], set()
     for entry in raw.get("channels", []):

@@ -25,21 +25,25 @@ metric = "UnblendedCost"
 [[providers]]
 id = "vercel"
 kind = "vercel"
-mode = "feed"
+mode = "native"
 currency = "USD"
 threshold = "100"
-path = "feeds/vercel-{month}.json"
-# HTTP 数据源：删除 path，配置 url 和可选 token_env
-# url = "https://billing-bridge.example/vercel/{month}"
-# token_env = "VERCEL_FEED_TOKEN"
+token_env = "VERCEL_TOKEN"
+team_id_env = "VERCEL_TEAM_ID"
+# 也可使用 team_id = "team_..." 或 slug = "your-team"
 
 [[providers]]
 id = "cloudflare"
 kind = "cloudflare"
-mode = "feed"
+mode = "native"
 currency = "USD"
 threshold = "100"
-path = "feeds/cloudflare-{month}.json"
+token_env = "CLOUDFLARE_API_TOKEN"
+account_id_env = "CLOUDFLARE_ACCOUNT_ID"
+# 官方受限接口仅返回按用量计费的费用，不含固定套餐。
+# 不设置固定月费则显示覆盖不完整并暂停该平台/总预算报警。
+# 核对所有固定套餐月费后设置；没有固定月费时显式填 "0"。
+# fixed_monthly_cost = "5"  # 原币、整个自然月的固定费用估计，按月全额计入
 
 [[providers]]
 id = "aliyun"

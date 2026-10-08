@@ -56,7 +56,7 @@ def send(channel, alert, client=None):
                 headers = {"Title": "CloudCost budget alert", "Priority": "high", "Tags": "money_with_wings,warning"}
                 payload = None
             else:
-                payload = {"event": "budget.exceeded", "basis": "unbilled_mtd", "alert": {k: v for k, v in alert.items() if k != "deliveries"}}
+                payload = {"event": "budget.exceeded", "basis": alert.get("basis", "unbilled_mtd"), "alert": {k: v for k, v in alert.items() if k != "deliveries"}}
             if channel.get("token_env"):
                 headers["Authorization"] = "Bearer " + env_value(channel["token_env"])
         kwargs = {"headers": headers, "params": params}
@@ -94,7 +94,7 @@ def email(channel, message):
     if not recipients:
         raise NotifyError("邮件渠道缺少 to")
     mail = EmailMessage()
-    mail["Subject"] = "CloudCost 当月未出账费用超过预算"
+    mail["Subject"] = "CloudCost 当月费用超过预算"
     mail["From"] = channel["from"]
     mail["To"] = ", ".join(recipients)
     mail.set_content(message)

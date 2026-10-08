@@ -72,7 +72,9 @@ class MoneyTests(unittest.TestCase):
         for value in ["2026-13", "2026-1", "0000-01", "x"]:
             with self.assertRaises(ValueError): month_key(value)
 
-    def test_only_unbilled_snapshots(self):
+    def test_supported_cost_bases(self):
+        bill = Bill(current_month(), money(1), "USD", "test", basis="calendar_mtd")
+        self.assertEqual(bill.basis, "calendar_mtd")
         with self.assertRaises(ValueError):
             Bill(current_month(), money(1), "USD", "test", basis="invoiced")
 
@@ -84,6 +86,34 @@ class MoneyTests(unittest.TestCase):
 
 
 class BudgetTests(Fixture):
+    def test_mixed_basis_persisted_and_used_in_notifications(self):
+        self.save("aws", "60")
+        self.db.save("aliyun", Bill(self.month, money("432"), "CNY", "native", observed_at=utcnow(), basis="calendar_mtd"), self.config)
+        data = summary(self.config, self.db, self.month)
+        self.assertEqual(data["basis"], "mixed_mtd")
+        self.assertTrue(data["complete"])
+        self.assertEqual(next(p for p in data["providers"] if p["id"] == "aliyun")["basis"], "calendar_mtd")
+        with patch("cloudcost.notify.send") as send:
+            check(self.config, self.db, self.month)
+        total = next(c.args[1] for c in send.call_args_list if c.args[1]["scope"] == "total")
+        self.assertEqual(total["basis"], "mixed_mtd")
+        self.assertIn("混合口径", total["message"])
+        domestic = next(a for a in self.db.alerts() if a["scope"] == "aliyun")
+        self.assertEqual(domestic["basis"], "calendar_mtd")
+        self.assertIn("自然月累计", domestic["message"])
+
+    def test_old_database_migration_preserves_alerts_and_snapshots(self):
+        self.seed()
+        with patch("cloudcost.notify.send"):
+            check(self.config, self.db, self.month)
+        with self.db.connect() as db:
+            db.execute("ALTER TABLE alerts DROP COLUMN basis")
+        restored = Database(self.config.database)
+        self.assertEqual(len(restored.latest(self.month)), 2)
+        self.assertEqual(len(restored.alerts()), 3)
+        self.assertTrue(all(a["basis"] == "unbilled_mtd" for a in restored.alerts()))
+        self.assertTrue(all(a["deliveries"][0]["status"] == "sent" for a in restored.alerts()))
+
     def test_latest_snapshot_not_sum(self):
         self.save("aws", "10")
         self.seed()
@@ -214,9 +244,14 @@ class ConfigTests(Fixture):
         self.assertEqual(self.config.provider("aliyun")["currency"], "CNY")
         self.assertEqual(self.config.database, self.root / "cost.sqlite3")
 
-    def test_invoice_native_sources_are_not_available(self):
+    def test_all_providers_default_to_native(self):
         for kind in ["vercel", "cloudflare"]:
-            self.path.write_text(f'[[providers]]\nid="{kind}"\nmode="native"\n')
+            self.path.write_text(f'[[providers]]\nid="{kind}"\n')
+            self.assertEqual(load_config(self.path).providers[0]["mode"], "native")
+
+    def test_fixed_fee_validation(self):
+        for kind, value in [("vercel", '"5"'), ("cloudflare", '"-1"'), ("cloudflare", '"NaN"')]:
+            self.path.write_text(f'[[providers]]\nid="{kind}"\nfixed_monthly_cost={value}\n')
             with self.assertRaises(ValueError): load_config(self.path)
 
     def test_total_scope_is_reserved(self):
