@@ -1,0 +1,142 @@
+name: Test and publish Docker image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests / Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install application with AWS adapter
+        run: python -m pip install '.[aws]'
+      - name: Run unit and API tests
+        run: python -m unittest discover -s tests -v
+      - name: Check SPA JavaScript
+        run: node --check cloudcost/static/app.js
+
+  image:
+    name: Build, verify and publish image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Normalize image name
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: printf 'name=ghcr.io/%s\n' "${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - name: Build local AMD64 image for verification
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: cloudcost:ci
+          cache-from: type=gha,scope=cloudcost
+          cache-to: type=gha,mode=max,scope=cloudcost
+      - name: Verify installed CLI and non-root runtime
+        run: |
+          docker run --rm cloudcost:ci --version
+          test "$(docker run --rm --entrypoint id cloudcost:ci -u)" = 10001
+          docker run --rm -v cloudcost-ci-data:/data cloudcost:ci init --demo -c /data/config.toml
+          docker run --rm -v cloudcost-ci-data:/data cloudcost:ci run --once --dry-run -c /data/config.toml
+      - name: Verify API and SPA from the container
+        run: |
+          docker run -d --name cloudcost-ci \
+            -e CLOUDCOST_API_TOKEN=ci-only-token \
+            -p 127.0.0.1:8765:8765 -v cloudcost-ci-data:/data \
+            cloudcost:ci serve -c /data/config.toml --host 0.0.0.0
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent -H 'Authorization: Bearer ci-only-token' \
+              http://127.0.0.1:8765/api/health > /dev/null; then break; fi
+            sleep 1
+          done
+          python - <<'PY'
+          import json, urllib.request
+          from decimal import Decimal
+          url = 'http://127.0.0.1:8765'
+          req = urllib.request.Request(url + '/api/summary', headers={'Authorization': 'Bearer ci-only-token'})
+          with urllib.request.urlopen(req, timeout=5) as r:
+              data = json.load(r)
+          assert data['complete'] is True
+          assert len(data['providers']) == 5
+          assert abs(Decimal(data['total_usd']) - Decimal('910.5888888888888888888888889')) < Decimal('0.00001')
+          with urllib.request.urlopen(url, timeout=5) as r:
+              assert b'CloudCost' in r.read()
+          try:
+              urllib.request.urlopen(url + '/api/summary', timeout=5)
+              raise AssertionError('Unauthenticated requests must fail')
+          except urllib.error.HTTPError as e:
+              assert e.code == 401
+          PY
+      - name: Clean up test container
+        if: always()
+        run: docker rm -f cloudcost-ci || true
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish AMD64 and ARM64 images
+        id: publish
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=cloudcost
+          cache-to: type=gha,mode=max,scope=cloudcost
+      - name: Published image summary
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          printf '### GHCR image\n\n`%s@%s`\n\nPlatforms: linux/amd64, linux/arm64\n' \
+            "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"

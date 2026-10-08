@@ -1,0 +1,9 @@
+# Allow only packaging metadata and application source into the build context.
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!cloudcost/
+!cloudcost/**
+cloudcost/**/__pycache__/
+cloudcost/**/*.pyc

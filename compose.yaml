@@ -1,0 +1,26 @@
+services:
+  cloudcost:
+    image: ghcr.io/geekdada/cloudcost:latest
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      CLOUDCOST_API_TOKEN: ${CLOUDCOST_API_TOKEN:?Set CLOUDCOST_API_TOKEN in .env}
+    ports:
+      - "127.0.0.1:${CLOUDCOST_PORT:-8765}:8765"
+    volumes:
+      - cloudcost-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8765/api/health',headers={'Authorization':'Bearer '+os.environ['CLOUDCOST_API_TOKEN']}); urllib.request.urlopen(r,timeout=3).close()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  cloudcost-data:

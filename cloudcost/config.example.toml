@@ -1,0 +1,88 @@
+# cloudcost init 生成本文件。所有相对路径以配置文件所在目录为准。
+[monitor]
+database = "cloudcost.sqlite3"
+interval_seconds = 3600
+stale_after_hours = 26
+
+# 固定汇率：1 USD = 7.2 CNY，无外部汇率依赖。
+[fx]
+USD = "1"
+CNY = "7.2"
+
+[budget]
+total = "1000"
+currency = "USD"
+
+[[providers]]
+id = "aws"
+kind = "aws"
+mode = "native"
+currency = "USD"
+threshold = "500"
+metric = "UnblendedCost"
+# profile = "billing-readonly"  # 不配置时使用 boto3 默认凭据链
+
+[[providers]]
+id = "vercel"
+kind = "vercel"
+mode = "feed"
+currency = "USD"
+threshold = "100"
+path = "feeds/vercel-{month}.json"
+# HTTP 数据源：删除 path，配置 url 和可选 token_env
+# url = "https://billing-bridge.example/vercel/{month}"
+# token_env = "VERCEL_FEED_TOKEN"
+
+[[providers]]
+id = "cloudflare"
+kind = "cloudflare"
+mode = "feed"
+currency = "USD"
+threshold = "100"
+path = "feeds/cloudflare-{month}.json"
+
+[[providers]]
+id = "aliyun"
+kind = "aliyun"
+mode = "native"
+currency = "CNY"
+threshold = "1000"
+access_key_env = "ALIYUN_ACCESS_KEY_ID"
+secret_key_env = "ALIYUN_ACCESS_KEY_SECRET"
+# security_token_env = "ALIYUN_SECURITY_TOKEN"
+
+[[providers]]
+id = "alibabacloud"
+kind = "alibabacloud"
+mode = "native"
+currency = "USD"
+threshold = "200"
+access_key_env = "ALIBABACLOUD_ACCESS_KEY_ID"
+secret_key_env = "ALIBABACLOUD_ACCESS_KEY_SECRET"
+
+[[channels]]
+name = "terminal"
+type = "console"
+
+# 通知凭据只写环境变量名，不在本文件中写真实 secret。
+# [[channels]]
+# name = "slack-ops"
+# type = "slack"
+# url_env = "SLACK_WEBHOOK_URL"
+
+# [[channels]]
+# name = "ding-ops"
+# type = "dingtalk"
+# url_env = "DINGTALK_WEBHOOK_URL"
+# secret_env = "DINGTALK_SIGN_SECRET"
+
+# [[channels]]
+# name = "mail-ops"
+# type = "email"
+# host = "smtp.example.com"
+# port = 587
+# tls = "starttls"
+# from = "cloudcost@example.com"
+# to = ["ops@example.com"]
+# username_env = "SMTP_USERNAME"
+# password_env = "SMTP_PASSWORD"

@@ -1,0 +1,4 @@
+month,amount,currency,basis,complete,observed_at
+2026-10,12.30,USD,unbilled_mtd,true,2026-10-08T12:00:00Z
+2026-10,8.90,USD,unbilled_mtd,true,2026-10-08T12:00:00Z
+2026-10,-2.20,USD,unbilled_mtd,true,2026-10-08T12:00:00Z

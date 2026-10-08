@@ -1,0 +1,18 @@
+[Unit]
+Description=CloudCost read-only API and dashboard
+After=network-online.target
+
+[Service]
+Type=simple
+User=cloudcost
+Group=cloudcost
+WorkingDirectory=/opt/cloudcost
+EnvironmentFile=-/etc/cloudcost/cloudcost.env
+ExecStart=/opt/cloudcost/.venv/bin/cloudcost serve -c /etc/cloudcost/config.toml --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
