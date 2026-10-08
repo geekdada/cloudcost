@@ -1,0 +1,73 @@
+# Requires Docker Compose >= 2.23.1 (inline configs).
+# Copy .env.example to .env, fill in credentials, then: docker compose up -d
+services:
+  cloudcost:
+    image: ghcr.io/geekdada/cloudcost:latest
+    restart: unless-stopped
+    init: true
+    environment:
+      CLOUDCOST_API_TOKEN: ${CLOUDCOST_API_TOKEN:?Set a random CloudCost API token in .env}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:?Set your Cloudflare Billing Read token in .env}
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:?Set your Cloudflare account ID in .env}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+    ports:
+      - "127.0.0.1:${CLOUDCOST_PORT:-8765}:8765"
+    volumes:
+      - cloudcost-data:/data
+    configs:
+      - source: cloudcost-config
+        target: /etc/cloudcost.toml
+    command:
+      - serve
+      - -c
+      - /etc/cloudcost.toml
+      - --host
+      - 0.0.0.0
+      - --monitor
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,urllib.request; req=urllib.request.Request('http://127.0.0.1:8765/api/health',headers={'Authorization':'Bearer '+os.environ['CLOUDCOST_API_TOKEN']}); urllib.request.urlopen(req,timeout=3).close()"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+configs:
+  cloudcost-config:
+    content: |
+      [monitor]
+      database = "/data/cloudcost.sqlite3"
+      interval_seconds = 3600
+      stale_after_hours = 26
+
+      [budget]
+      total = "${CLOUDCOST_TOTAL_BUDGET:-100}"
+      currency = "USD"
+
+      [[providers]]
+      id = "cloudflare"
+      kind = "cloudflare"
+      mode = "native"
+      currency = "USD"
+      threshold = "${CLOUDFLARE_BUDGET:-100}"
+      account_id_env = "CLOUDFLARE_ACCOUNT_ID"
+      token_env = "CLOUDFLARE_API_TOKEN"
+      # Entire month's fixed subscription fees, estimated without daily proration.
+      # Explicitly set 0 in .env only if there are no fixed subscription fees.
+      fixed_monthly_cost = "${CLOUDFLARE_FIXED_MONTHLY_COST:?Set the sum of fixed monthly fees, or 0 if none, in .env}"
+
+      [[channels]]
+      name = "terminal"
+      type = "console"
+
+      # Uncomment this block and set SLACK_WEBHOOK_URL in .env for Slack alerts.
+      # [[channels]]
+      # name = "slack"
+      # type = "slack"
+      # url_env = "SLACK_WEBHOOK_URL"
+
+volumes:
+  cloudcost-data:
