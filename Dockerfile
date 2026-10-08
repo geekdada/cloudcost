@@ -14,7 +14,7 @@ RUN --mount=type=secret,id=proxy_ca \
 
 FROM python:3.12-slim-bookworm AS runtime
 
-ARG VERSION=0.2.0
+ARG VERSION=0.2.1
 LABEL org.opencontainers.image.title="CloudCost" \
       org.opencontainers.image.description="Monthly unbilled cloud cost monitor with SQLite and a read-only SPA" \
       org.opencontainers.image.version="${VERSION}" \

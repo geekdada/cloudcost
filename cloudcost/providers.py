@@ -20,6 +20,12 @@ class ProviderError(Exception):
     """Safe user-facing error with no credentials or response bodies."""
 
 
+class ProviderHTTPError(ProviderError):
+    def __init__(self, status_code):
+        self.status_code = status_code
+        super().__init__(f"账单数据源返回 HTTP {status_code}")
+
+
 def request(client, method, url, **kwargs):
     for attempt in range(3):
         try:
@@ -34,7 +40,7 @@ def request(client, method, url, **kwargs):
                 time.sleep(0.25 * 2**attempt)
                 continue
         if response.is_error:
-            raise ProviderError(f"账单数据源返回 HTTP {response.status_code}")
+            raise ProviderHTTPError(response.status_code)
         return response
     raise ProviderError("网络请求失败")
 
@@ -278,10 +284,27 @@ def cloudflare(provider, month, client):
     if not isinstance(account, str) or len(account) != 32 or any(c not in "0123456789abcdefABCDEF" for c in account):
         raise ProviderError("Cloudflare account_id 应为 32 位十六进制 ID")
     token = env_value(provider.get("token_env", "CLOUDFLARE_API_TOKEN"))
-    # POST is a read-only query in the official OpenAPI; GET supplies only usage.
-    response = request(client, "POST", f"https://api.cloudflare.com/client/v4/accounts/{account}/billable/usage",
-                       headers={"Authorization": "Bearer " + token},
-                       json={"Metric": "cost", "TimePeriod": {"From": start, "To": end}})
+    base = f"https://api.cloudflare.com/client/v4/accounts/{account}"
+    headers = {"Authorization": "Bearer " + token}
+    # V1 returns rated daily costs for PayGo accounts. A query must include each
+    # subscription's billing anchor, which may precede the calendar month.
+    # Look back 31 days, then filter CHARGE dates when summing below. Do not sum
+    # CumulatedContractedCost or the whole subscription billing period.
+    lookback = (datetime.fromisoformat(start.replace("Z", "+00:00")).date() - timedelta(days=31)).isoformat()
+    api = "v1"
+    try:
+        response = request(client, "GET", base + "/billable-usage", headers=headers,
+                           params={"from": lookback, "to": end[:10]})
+    except ProviderHTTPError as first:
+        if first.status_code not in {403, 404, 405}:
+            raise
+        # The restricted V2 cost query is available on some accounts only.
+        api = "v2"
+        try:
+            response = request(client, "POST", base + "/billable/usage", headers=headers,
+                               json={"Metric": "cost", "TimePeriod": {"From": start, "To": end}})
+        except ProviderHTTPError as second:
+            raise ProviderError(f"Cloudflare 费用接口不可用（v1 HTTP {first.status_code}，v2 HTTP {second.status_code}）；检查 Billing Read 权限及账号接口开放状态") from None
     if len(response.content) > 20 * 1024 * 1024:
         raise ProviderError("费用数据超过 20 MiB")
     data = json.loads(response.text, parse_float=Decimal)
@@ -295,7 +318,7 @@ def cloudflare(provider, month, client):
         if currency != provider["currency"]:
             raise ProviderError("返回币种与固定月费配置不一致")
         amount += money(fixed)
-    source = "cloudflare:FOCUS:BilledCost" + (":configured-fixed-fees" if fixed is not None else ":usage-only")
+    source = f"cloudflare:{api}:FOCUS:BilledCost" + (":configured-fixed-fees" if fixed is not None else ":usage-only")
     return Bill(month, amount, currency, source, complete=fixed is not None, observed_at=utcnow(), basis="calendar_mtd")
 
 

@@ -40,7 +40,7 @@ currency = "USD"
 threshold = "100"
 token_env = "CLOUDFLARE_API_TOKEN"
 account_id_env = "CLOUDFLARE_ACCOUNT_ID"
-# 官方受限接口仅返回按用量计费的费用，不含固定套餐。
+# 优先使用 v1 日费用接口，受限 v2 为备用；用量费不含固定套餐。
 # 不设置固定月费则显示覆盖不完整并暂停该平台/总预算报警。
 # 核对所有固定套餐月费后设置；没有固定月费时显式填 "0"。
 # fixed_monthly_cost = "5"  # 原币、整个自然月的固定费用估计，按月全额计入

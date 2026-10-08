@@ -13,7 +13,14 @@ docker compose logs -f cloudcost
 
 访问 <http://127.0.0.1:8765>，输入 `.env` 中的 `CLOUDCOST_API_TOKEN`。默认报警输出到容器日志；启用 Slack 时，取消 `compose.yml` 中 Slack channel 的注释，并在 `.env` 中填写 `SLACK_WEBHOOK_URL`。修改配置后重新执行 `docker compose up -d`。
 
-`CLOUDFLARE_FIXED_MONTHLY_COST` 是整个自然月固定套餐费的原币估计，不按天摊销。确实没有固定费时填 `0`。账号需要有 Billing Read 权限，并已开放 Cloudflare 的 Alpha / Restricted 费用接口；没有金额数据时不能视为零费用。
+`CLOUDFLARE_FIXED_MONTHLY_COST` 是整个自然月固定套餐费的原币估计，不按天摊销。确实没有固定费时填 `0`。账号需要有 Billing Read 权限；优先调用 PayGo v1 日费用接口，v1 不可用时才尝试 Alpha / Restricted v2。没有金额数据时不能视为零费用。
+
+更新镜像并重新创建容器：
+
+```bash
+docker compose pull
+docker compose up -d --force-recreate
+```
 
 预览采集与报警（不会发送通知）：
 

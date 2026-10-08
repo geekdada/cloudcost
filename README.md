@@ -14,15 +14,19 @@
 | 阿里云国内站 `aliyun` | BSS `QueryAccountBill` | 当月 `BillingCycle` 的 `PretaxAmount`（优惠后、税前），默认 CNY。不是 `PaymentAmount`。 |
 | 阿里云国际站 `alibabacloud` | 国际站 BSS `QueryAccountBill` | 同上，独立 endpoint 和凭据，默认 USD。 |
 | Vercel | 官方 `GET /v1/billing/charges` | 按 `ChargePeriodStart/End` 汇总 JSONL 明细的 `BilledCost`，包含正负费用更正；自然月累计，默认 USD。配置 token 和 team 即可，无需 bridge。 |
-| Cloudflare | 官方只读 `POST /accounts/{account_id}/billable/usage`，`Metric=cost` | 按自然月查询已定价的用量明细。接口为 **Alpha / Restricted**，需要 Billing Read 权限及账号开放；不含固定套餐费用。 |
+| Cloudflare | 优先官方 `GET /accounts/{account_id}/billable-usage`（v1），必要时尝试受限 v2 成本查询 | 按日汇总 `BilledCost`，以费用发生日期归属自然月。需要 Billing Read 权限；固定套餐费用另行配置。 |
 
 五个平台默认都使用 `mode = "native"`，也都可切换为 JSON/CSV 文件或 HTTPS feed。原生接口没有逐笔未出账状态，因此全部如实标记为 `calendar_mtd`。数据库、API、CSV 导出、SPA 与报警都保留实际口径；不同口径合计为 `mixed_mtd`。旧数据库和已有 `unbilled_mtd` feed 可以继续使用。
 
-Cloudflare 的 GET 接口只返回用量，不能计算金额。本工具使用官方 OpenAPI 定义的只读 POST 查询 `Metric=cost`（不修改云资源）；费用模式只对已支持的底层数据源开放。接口未开放、返回空集或缺少金额时报告采集失败，不当作零元，也不会退回历史发票。
+Cloudflare 优先使用 **v1 GET `/billable-usage`**，该接口提供已定价的每日费用。查询起点提前 31 天，包含可能位于上月的订阅计费周期起点，再按 `ChargePeriodStart/End` 筛出目标自然月；只相加每日 `BilledCost`，不相加周期累计字段 `CumulatedContractedCost`。这样不会遗漏非月初账期，也不会把上月费用计入当月。
+
+若 v1 返回 HTTP 403/404/405，再尝试 v2 的只读 POST `/billable/usage`，`Metric=cost`。v2 为 Alpha / Restricted，文档中声明的 POST 在部分账号实际会返回 405；v2 GET 则只返回用量，不能用于计算金额。接口不可用、返回空集或缺少金额时报告失败，不当作零元。
 
 Cloudflare 原生采集默认 `complete=false`，因为用量金额不包括固定套餐。核对所有固定套餐费用后，可配置 `fixed_monthly_cost = "5"`（原币）补充，或无固定费时显式填写 `"0"`，然后启用完整预算判断。这个值是**整个自然月的固定费用估计**，每月全额计入，不按天摊销；年付、月中升级、退款等需自行调整，或改用完整 feed。固定费用配置不会解决未开放或缺失用量金额的问题。
 
-官方接口说明：[Vercel FOCUS 费用查询](https://vercel.com/docs/rest-api/reference/endpoints/billing/list-billing-charges)、[Cloudflare Billable Usage](https://developers.cloudflare.com/api/resources/billing/subresources/usage/methods/get_account_usage_v2/)、[Cloudflare 官方 OpenAPI（含 POST 查询定义）](https://github.com/cloudflare/api-schemas/blob/main/openapi.yaml)、[Cloudflare 用量费用的覆盖范围](https://developers.cloudflare.com/billing/manage/billable-usage/)。
+官方接口说明：[Cloudflare v1 日费用查询](https://developers.cloudflare.com/api/resources/billing/subresources/usage/methods/paygo/)、[Vercel FOCUS 费用查询](https://vercel.com/docs/rest-api/reference/endpoints/billing/list-billing-charges)、[Cloudflare Billable Usage](https://developers.cloudflare.com/api/resources/billing/subresources/usage/methods/get_account_usage_v2/)、[Cloudflare 官方 OpenAPI（含 POST 查询定义）](https://github.com/cloudflare/api-schemas/blob/main/openapi.yaml)、[Cloudflare 用量费用的覆盖范围](https://developers.cloudflare.com/billing/manage/billable-usage/)。
+
+0.2.1 修复 Cloudflare HTTP 405：优先使用 v1 GET，覆盖非月初计费周期，并在两个接口均不可用时提示各自的 HTTP 状态。0.2.0 用户更新镜像并重新创建容器即可，配置无需修改。
 
 从 0.1.0 升级时：SQLite 会自动迁移并保留历史记录和投递状态；配置不会被覆盖。要启用新的原生采集，把已有 Vercel / Cloudflare 的 `mode = "feed"` 改为 `"native"`，移除 `path/url`，按下文配置 token、team / account 和固定月费。已有 feed 继续有效。
 
@@ -154,7 +158,7 @@ CSV 使用 `format = "csv"`，列为 `month,amount,currency,basis,complete,obser
 
 Vercel 配置 `token_env = "VERCEL_TOKEN"`，以及 `team_id_env = "VERCEL_TEAM_ID"`、`team_id` 或 `slug`。团队费用接口需要有相应 Billing 查询权限的用户 token。使用 `BilledCost` 而非 `EffectiveCost`，避免把摊销金额与其他平台的普通月累计混用；前者是计费金额，不表示已支付。
 
-Cloudflare 配置 `token_env = "CLOUDFLARE_API_TOKEN"` 与 `account_id_env = "CLOUDFLARE_ACCOUNT_ID"`，或直接配置 `account_id`。需要 Billing Read 权限和费用接口开放。默认配置故意不猜固定费：在该 provider 中填写经过核对的 `fixed_monthly_cost`，才能把用量费与固定费用估计作为完整月度预算比较。
+Cloudflare 配置 `token_env = "CLOUDFLARE_API_TOKEN"` 与 `account_id_env = "CLOUDFLARE_ACCOUNT_ID"`，或直接配置 `account_id`。需要 Billing Read 权限，优先使用 PayGo v1 费用接口，受限 v2 仅作备用。默认配置故意不猜固定费：在该 provider 中填写经过核对的 `fixed_monthly_cost`，才能把用量费与固定费用估计作为完整月度预算比较。
 
 ```toml
 [[providers]]
